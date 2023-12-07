@@ -8,11 +8,13 @@ from argparse import ArgumentParser
 from pathlib import Path
 from typing import Optional
 
-from datasets.commands import BaseTransformersCLICommand
-from datasets.load import import_main_class, prepare_module
-from datasets.utils import MockDownloadManager
-from datasets.utils.download_manager import DownloadManager
-from datasets.utils.file_utils import HF_DATASETS_CACHE, DownloadConfig
+from datasets import config
+from datasets.commands import BaseDatasetsCLICommand
+from datasets.download.download_config import DownloadConfig
+from datasets.download.download_manager import DownloadManager
+from datasets.download.mock_download_manager import MockDownloadManager
+from datasets.load import dataset_module_factory, import_main_class
+from datasets.utils.deprecation_utils import deprecated
 from datasets.utils.logging import get_logger, set_verbosity_warning
 from datasets.utils.py_utils import map_nested
 
@@ -22,7 +24,7 @@ logger = get_logger(__name__)
 DEFAULT_ENCODING = "utf-8"
 
 
-def test_command_factory(args):
+def dummy_data_command_factory(args):
     return DummyDataCommand(
         args.path_to_dataset,
         args.auto_generate,
@@ -40,20 +42,20 @@ class DummyDataGeneratorDownloadManager(DownloadManager):
     def __init__(self, mock_download_manager, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.mock_download_manager = mock_download_manager
-        self.downloaded_paths = []
+        self.downloaded_dummy_paths = []
         self.expected_dummy_paths = []
 
     def download(self, url_or_urls):
         output = super().download(url_or_urls)
         dummy_output = self.mock_download_manager.download(url_or_urls)
-        map_nested(self.downloaded_paths.append, output, map_tuple=True)
+        map_nested(self.downloaded_dummy_paths.append, output, map_tuple=True)
         map_nested(self.expected_dummy_paths.append, dummy_output, map_tuple=True)
         return output
 
     def download_and_extract(self, url_or_urls):
         output = super().extract(super().download(url_or_urls))
         dummy_output = self.mock_download_manager.download(url_or_urls)
-        map_nested(self.downloaded_paths.append, output, map_tuple=True)
+        map_nested(self.downloaded_dummy_paths.append, output, map_tuple=True)
         map_nested(self.expected_dummy_paths.append, dummy_output, map_tuple=True)
         return output
 
@@ -76,7 +78,7 @@ class DummyDataGeneratorDownloadManager(DownloadManager):
         )
         total = 0
         self.mock_download_manager.load_existing_dummy_data = False
-        for src_path, relative_dst_path in zip(self.downloaded_paths, self.expected_dummy_paths):
+        for src_path, relative_dst_path in zip(self.downloaded_dummy_paths, self.expected_dummy_paths):
             dst_path = os.path.join(
                 self.mock_download_manager.datasets_scripts_dir,
                 self.mock_download_manager.dataset_name,
@@ -112,8 +114,9 @@ class DummyDataGeneratorDownloadManager(DownloadManager):
         encoding = encoding or DEFAULT_ENCODING
         if os.path.isfile(src_path):
             logger.debug(f"Trying to generate dummy data file {dst_path}")
+            dst_path_extensions = Path(dst_path).suffixes
             line_by_line_extensions = [".txt", ".csv", ".jsonl", ".tsv"]
-            is_line_by_line_text_file = any(dst_path.endswith(extension) for extension in line_by_line_extensions)
+            is_line_by_line_text_file = any(extension in dst_path_extensions for extension in line_by_line_extensions)
             if match_text_files is not None:
                 file_name = os.path.basename(dst_path)
                 for pattern in match_text_files.split(","):
@@ -121,7 +124,7 @@ class DummyDataGeneratorDownloadManager(DownloadManager):
             # Line by line text file (txt, csv etc.)
             if is_line_by_line_text_file:
                 Path(dst_path).parent.mkdir(exist_ok=True, parents=True)
-                with open(src_path, "r", encoding=encoding) as src_file:
+                with open(src_path, encoding=encoding) as src_file:
                     with open(dst_path, "w", encoding=encoding) as dst_file:
                         first_lines = []
                         for i, line in enumerate(src_file):
@@ -131,8 +134,8 @@ class DummyDataGeneratorDownloadManager(DownloadManager):
                         dst_file.write("".join(first_lines).strip())
                 return 1
             # json file
-            elif dst_path.endswith(".json"):
-                with open(src_path, "r", encoding=encoding) as src_file:
+            elif ".json" in dst_path_extensions:
+                with open(src_path, encoding=encoding) as src_file:
                     json_data = json.load(src_file)
                     if json_field is not None:
                         json_data = json_data[json_field]
@@ -153,7 +156,7 @@ class DummyDataGeneratorDownloadManager(DownloadManager):
                         json.dump(first_json_data, dst_file)
                 return 1
             # xml file
-            elif dst_path.endswith(".xml"):
+            elif any(extension in dst_path_extensions for extension in [".xml", ".txm"]):
                 if xml_tag is None:
                     logger.warning("Found xml file but 'xml_tag' is set to None. Please provide --xml_tag")
                 else:
@@ -185,7 +188,7 @@ class DummyDataGeneratorDownloadManager(DownloadManager):
     @staticmethod
     def _create_xml_dummy_data(src_path, dst_path, xml_tag, n_lines=5, encoding=DEFAULT_ENCODING):
         Path(dst_path).parent.mkdir(exist_ok=True, parents=True)
-        with open(src_path, "r", encoding=encoding) as src_file:
+        with open(src_path, encoding=encoding) as src_file:
             n_line = 0
             parents = []
             for event, elem in ET.iterparse(src_file, events=("start", "end")):
@@ -210,10 +213,13 @@ class DummyDataGeneratorDownloadManager(DownloadManager):
         shutil.rmtree(base_name)
 
 
-class DummyDataCommand(BaseTransformersCLICommand):
+@deprecated(
+    "The `datasets` repository does not host the dataset scripts anymore. Therefore, dummy data is no longer needed to test their loading with CI."
+)
+class DummyDataCommand(BaseDatasetsCLICommand):
     @staticmethod
     def register_subcommand(parser: ArgumentParser):
-        test_parser = parser.add_parser("dummy_data")
+        test_parser = parser.add_parser("dummy_data", help="Generate dummy data.")
         test_parser.add_argument("--auto_generate", action="store_true", help="Automatically generate dummy data")
         test_parser.add_argument(
             "--n_lines", type=int, default=5, help="Number of lines or samples to keep when auto-generating dummy data"
@@ -254,7 +260,7 @@ class DummyDataCommand(BaseTransformersCLICommand):
             help=f"Encoding to use when auto-generating dummy data. Defaults to {DEFAULT_ENCODING}",
         )
         test_parser.add_argument("path_to_dataset", type=str, help="Path to the dataset (example: ./datasets/squad)")
-        test_parser.set_defaults(func=test_command_factory)
+        test_parser.set_defaults(func=dummy_data_command_factory)
 
     def __init__(
         self,
@@ -273,7 +279,7 @@ class DummyDataCommand(BaseTransformersCLICommand):
             self._dataset_name = path_to_dataset.replace(os.sep, "/").split("/")[-1]
         else:
             self._dataset_name = path_to_dataset.replace(os.sep, "/").split("/")[-2]
-        cache_dir = os.path.expanduser(cache_dir or HF_DATASETS_CACHE)
+        cache_dir = os.path.expanduser(cache_dir or config.HF_DATASETS_CACHE)
         self._auto_generate = auto_generate
         self._n_lines = n_lines
         self._json_field = json_field
@@ -285,27 +291,22 @@ class DummyDataCommand(BaseTransformersCLICommand):
 
     def run(self):
         set_verbosity_warning()
-        module_path, hash = prepare_module(self._path_to_dataset)
-        builder_cls = import_main_class(module_path)
+        dataset_module = dataset_module_factory(self._path_to_dataset)
+        builder_cls = import_main_class(dataset_module.module_path)
 
         # use `None` as config if no configs
-        configs = builder_cls.BUILDER_CONFIGS or [None]
+        builder_configs = builder_cls.BUILDER_CONFIGS or [None]
         auto_generate_results = []
         with tempfile.TemporaryDirectory() as tmp_dir:
-            for config in configs:
-                if config is None:
-                    name = None
-                    version = builder_cls.VERSION
-                else:
-                    version = config.version
-                    name = config.name
-
-                dataset_builder = builder_cls(name=name, hash=hash, cache_dir=tmp_dir)
+            for builder_config in builder_configs:
+                config_name = builder_config.name if builder_config else None
+                dataset_builder = builder_cls(config_name=config_name, hash=dataset_module.hash, cache_dir=tmp_dir)
+                version = builder_config.version if builder_config else dataset_builder.config.version
                 mock_dl_manager = MockDownloadManager(
                     dataset_name=self._dataset_name,
-                    config=config,
+                    config=builder_config,
                     version=version,
-                    is_local=True,
+                    use_local_dummy_data=True,
                     load_existing_dummy_data=False,
                 )
 
@@ -328,7 +329,11 @@ class DummyDataCommand(BaseTransformersCLICommand):
                     print(f"Automatic dummy data generation failed for some configs of '{self._path_to_dataset}'")
 
     def _autogenerate_dummy_data(self, dataset_builder, mock_dl_manager, keep_uncompressed) -> Optional[bool]:
-        dl_cache_dir = os.path.join(self._cache_dir or HF_DATASETS_CACHE, "downloads")
+        dl_cache_dir = (
+            os.path.join(self._cache_dir, config.DOWNLOADED_DATASETS_DIR)
+            if self._cache_dir
+            else config.DOWNLOADED_DATASETS_PATH
+        )
         download_config = DownloadConfig(cache_dir=dl_cache_dir)
         dl_manager = DummyDataGeneratorDownloadManager(
             dataset_name=self._dataset_name, mock_download_manager=mock_dl_manager, download_config=download_config
@@ -352,7 +357,7 @@ class DummyDataCommand(BaseTransformersCLICommand):
             try:
                 split_generators = dataset_builder._split_generators(mock_dl_manager)
                 for split_generator in split_generators:
-                    dataset_builder._prepare_split(split_generator)
+                    dataset_builder._prepare_split(split_generator, check_duplicate_keys=False)
                     n_examples_per_split[split_generator.name] = split_generator.split_info.num_examples
             except OSError as e:
                 logger.error(
@@ -383,16 +388,14 @@ class DummyDataCommand(BaseTransformersCLICommand):
 
     def _print_dummy_data_instructions(self, dataset_builder, mock_dl_manager):
         dummy_data_folder = os.path.join(self._path_to_dataset, mock_dl_manager.dummy_data_folder)
-        config = mock_dl_manager.config
         logger.info(f"Creating dummy folder structure for {dummy_data_folder}... ")
         os.makedirs(dummy_data_folder, exist_ok=True)
 
         try:
             generator_splits = dataset_builder._split_generators(mock_dl_manager)
         except FileNotFoundError as e:
-
             print(
-                f"Dataset {self._dataset_name} with config {config} seems to already open files in the method `_split_generators(...)`. You might consider to instead only open files in the method `_generate_examples(...)` instead. If this is not possible the dummy data has to be created with less guidance. Make sure you create the file {e.filename}."
+                f"Dataset {self._dataset_name} with config {mock_dl_manager.config} seems to already open files in the method `_split_generators(...)`. You might consider to instead only open files in the method `_generate_examples(...)` instead. If this is not possible the dummy data has to be created with less guidance. Make sure you create the file {e.filename}."
             )
 
         files_to_create = set()
@@ -407,7 +410,9 @@ class DummyDataCommand(BaseTransformersCLICommand):
 
             try:
                 dummy_data_guidance_print = "\n" + 30 * "=" + "DUMMY DATA INSTRUCTIONS" + 30 * "=" + "\n"
-                config_string = f"config {config.name} of " if config is not None else ""
+                config_string = (
+                    f"config {mock_dl_manager.config.name} of " if mock_dl_manager.config is not None else ""
+                )
                 dummy_data_guidance_print += (
                     "- In order to create the dummy data for "
                     + config_string
@@ -438,18 +443,18 @@ class DummyDataCommand(BaseTransformersCLICommand):
             dummy_data_guidance_print += f"- If the method `_generate_examples(...)` includes multiple `open()` statements, you might have to create other files in addition to '{files_string}'. In this case please refer to the `_generate_examples(...)` method \n\n"
 
         if len(files_to_create) == 1 and next(iter(files_to_create)) == dummy_file_name:
-            dummy_data_guidance_print += f"-After the dummy data file is created, it should be zipped to '{dummy_file_name}.zip' with the command `zip {dummy_file_name}.zip {dummy_file_name}` \n\n"
+            dummy_data_guidance_print += f"- After the dummy data file is created, it should be zipped to '{dummy_file_name}.zip' with the command `zip {dummy_file_name}.zip {dummy_file_name}` \n\n"
 
             dummy_data_guidance_print += (
-                f"-You can now delete the file '{dummy_file_name}' with the command `rm {dummy_file_name}` \n\n"
+                f"- You can now delete the file '{dummy_file_name}' with the command `rm {dummy_file_name}` \n\n"
             )
 
             dummy_data_guidance_print += f"- To get the file '{dummy_file_name}' back for further changes to the dummy data, simply unzip {dummy_file_name}.zip with the command `unzip {dummy_file_name}.zip` \n\n"
         else:
-            dummy_data_guidance_print += f"-After all dummy data files are created, they should be zipped recursively to '{dummy_file_name}.zip' with the command `zip -r {dummy_file_name}.zip {dummy_file_name}/` \n\n"
+            dummy_data_guidance_print += f"- After all dummy data files are created, they should be zipped recursively to '{dummy_file_name}.zip' with the command `zip -r {dummy_file_name}.zip {dummy_file_name}/` \n\n"
 
             dummy_data_guidance_print += (
-                f"-You can now delete the folder '{dummy_file_name}' with the command `rm -r {dummy_file_name}` \n\n"
+                f"- You can now delete the folder '{dummy_file_name}' with the command `rm -r {dummy_file_name}` \n\n"
             )
 
             dummy_data_guidance_print += f"- To get the folder '{dummy_file_name}' back for further changes to the dummy data, simply unzip {dummy_file_name}.zip with the command `unzip {dummy_file_name}.zip` \n\n"

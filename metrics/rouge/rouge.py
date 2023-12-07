@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 The HuggingFace Datasets Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,10 +14,10 @@
 """ ROUGE metric from Google Research github repo. """
 
 # The dependencies in https://github.com/google-research/google-research/blob/master/rouge/requirements.txt
-import absl  # Here to have a nice missing dependency error message early on
-import nltk  # Here to have a nice missing dependency error message early on
-import numpy  # Here to have a nice missing dependency error message early on
-import six  # Here to have a nice missing dependency error message early on
+import absl  # noqa: F401 # Here to have a nice missing dependency error message early on
+import nltk  # noqa: F401 # Here to have a nice missing dependency error message early on
+import numpy  # noqa: F401 # Here to have a nice missing dependency error message early on
+import six  # noqa: F401 # Here to have a nice missing dependency error message early on
 from rouge_score import rouge_scorer, scoring
 
 import datasets
@@ -52,7 +51,7 @@ https://github.com/google-research/google-research/tree/master/rouge
 _KWARGS_DESCRIPTION = """
 Calculates average rouge scores for a list of hypotheses and references
 Args:
-    predictions: list of predictions to score. Each predictions
+    predictions: list of predictions to score. Each prediction
         should be a string with tokens separated by spaces.
     references: list of reference for each prediction. Each
         reference should be a string with tokens separated by spaces.
@@ -63,15 +62,28 @@ Args:
         `"rougeLSum"`: rougeLsum splits text using `"\n"`.
         See details in https://github.com/huggingface/datasets/issues/617
     use_stemmer: Bool indicating whether Porter stemmer should be used to strip word suffixes.
-    use_agregator: Return aggregates if this is set to True
+    use_aggregator: Return aggregates if this is set to True
 Returns:
     rouge1: rouge_1 (precision, recall, f1),
     rouge2: rouge_2 (precision, recall, f1),
     rougeL: rouge_l (precision, recall, f1),
     rougeLsum: rouge_lsum (precision, recall, f1)
+Examples:
+
+    >>> rouge = datasets.load_metric('rouge')
+    >>> predictions = ["hello there", "general kenobi"]
+    >>> references = ["hello there", "general kenobi"]
+    >>> results = rouge.compute(predictions=predictions, references=references)
+    >>> print(list(results.keys()))
+    ['rouge1', 'rouge2', 'rougeL', 'rougeLsum']
+    >>> print(results["rouge1"])
+    AggregateScore(low=Score(precision=1.0, recall=1.0, fmeasure=1.0), mid=Score(precision=1.0, recall=1.0, fmeasure=1.0), high=Score(precision=1.0, recall=1.0, fmeasure=1.0))
+    >>> print(results["rouge1"].mid.fmeasure)
+    1.0
 """
 
 
+@datasets.utils.file_utils.add_start_docstrings(_DESCRIPTION, _KWARGS_DESCRIPTION)
 class Rouge(datasets.Metric):
     def _info(self):
         return datasets.MetricInfo(
@@ -91,28 +103,28 @@ class Rouge(datasets.Metric):
             ],
         )
 
-    def _compute(self, predictions, references, rouge_types=None, use_agregator=True, use_stemmer=False):
+    def _compute(self, predictions, references, rouge_types=None, use_aggregator=True, use_stemmer=False):
         if rouge_types is None:
             rouge_types = ["rouge1", "rouge2", "rougeL", "rougeLsum"]
 
         scorer = rouge_scorer.RougeScorer(rouge_types=rouge_types, use_stemmer=use_stemmer)
-        if use_agregator:
+        if use_aggregator:
             aggregator = scoring.BootstrapAggregator()
         else:
             scores = []
 
         for ref, pred in zip(references, predictions):
             score = scorer.score(ref, pred)
-            if use_agregator:
+            if use_aggregator:
                 aggregator.add_scores(score)
             else:
                 scores.append(score)
 
-        if use_agregator:
+        if use_aggregator:
             result = aggregator.aggregate()
         else:
             result = {}
             for key in scores[0]:
-                result[key] = list(score[key] for score in scores)
+                result[key] = [score[key] for score in scores]
 
         return result

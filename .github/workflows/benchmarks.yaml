@@ -1,32 +1,38 @@
 name: benchmarks
-on: [push]
+on:
+  push:
+    branches:
+      - main
 jobs:
   run:
     runs-on: [ubuntu-latest]
-    container: docker://dvcorg/cml-py3:latest
+    container: ghcr.io/iterative/cml
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: cml_run
         env:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          CML_DRIVER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # See https://github.com/actions/checkout/issues/760
+          git config --global --add safe.directory /__w/datasets/datasets
+
           # Your ML workflow goes here
 
           pip install --upgrade pip
           pip install setuptools wheel
           pip install -e .[benchmarks]
 
-          # pyarrow==0.17.1
-          pip install pyarrow==0.17.1
+          # pyarrow==8.0.0
+          pip install pyarrow==8.0.0
 
           dvc repro --force
 
           git fetch --prune
-          dvc metrics diff --show-json master > report.json
+          dvc metrics diff --json main > report.json
 
           python ./benchmarks/format.py report.json report.md
 
-          echo "<details>\n<summary>Show benchmarks</summary>\n\nPyArrow==0.17.1\n" > final_report.md
+          echo "<details>\n<summary>Show benchmarks</summary>\n\nPyArrow==8.0.0\n" > final_report.md
           cat report.md >> final_report.md
 
           # pyarrow
@@ -35,12 +41,12 @@ jobs:
           dvc repro --force
 
           git fetch --prune
-          dvc metrics diff --show-json master > report.json
+          dvc metrics diff --json main > report.json
 
           python ./benchmarks/format.py report.json report.md
 
-          echo "\nPyArrow==1.0\n" >> final_report.md
+          echo "\nPyArrow==latest\n" >> final_report.md
           cat report.md >> final_report.md
           echo "\n</details>" >> final_report.md
 
-          cml-send-comment final_report.md
+          cml comment create final_report.md

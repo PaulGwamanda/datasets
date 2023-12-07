@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 The HuggingFace Datasets Authors and the TensorFlow Datasets Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,32 +18,45 @@
 import dataclasses
 import re
 from dataclasses import dataclass
+from functools import total_ordering
+from typing import Optional, Union
 
 
-_VERSION_TMPL = r"^(?P<major>{v})" r"\.(?P<minor>{v})" r"\.(?P<patch>{v})$"
-_VERSION_WILDCARD_REG = re.compile(_VERSION_TMPL.format(v=r"\d+|\*"))
-_VERSION_RESOLVED_REG = re.compile(_VERSION_TMPL.format(v=r"\d+"))
+_VERSION_REG = re.compile(r"^(?P<major>\d+)" r"\.(?P<minor>\d+)" r"\.(?P<patch>\d+)$")
 
 
-@dataclass()
+@total_ordering
+@dataclass
 class Version:
-    """Dataset version MAJOR.MINOR.PATCH.
+    """Dataset version `MAJOR.MINOR.PATCH`.
+
     Args:
-        version_str: string. Eg: "1.2.3".
-        description: string, a description of what is new in this version.
+        version_str (`str`):
+            The dataset version.
+        description (`str`):
+            A description of what is new in this version.
+        major (`str`):
+        minor (`str`):
+        patch (`str`):
+
+    Example:
+
+    ```py
+    >>> VERSION = datasets.Version("1.0.0")
+    ```
     """
 
     version_str: str
-    description: str = None
-    major: str = None
-    minor: str = None
-    patch: str = None
+    description: Optional[str] = None
+    major: Optional[Union[str, int]] = None
+    minor: Optional[Union[str, int]] = None
+    patch: Optional[Union[str, int]] = None
 
     def __post_init__(self):
-        self.major, self.minor, self.patch = _str_to_version(self.version_str)
+        self.major, self.minor, self.patch = _str_to_version_tuple(self.version_str)
 
     def __repr__(self):
-        return "{}.{}.{}".format(*self.tuple)
+        return f"{self.tuple[0]}.{self.tuple[1]}.{self.tuple[2]}"
 
     @property
     def tuple(self):
@@ -55,57 +67,40 @@ class Version:
             return Version(other)
         elif isinstance(other, Version):
             return other
-        raise AssertionError("{} (type {}) cannot be compared to version.".format(other, type(other)))
+        raise TypeError(f"{other} (type {type(other)}) cannot be compared to version.")
 
     def __eq__(self, other):
-        other = self._validate_operand(other)
-        return self.tuple == other.tuple
-
-    def __ne__(self, other):
-        other = self._validate_operand(other)
-        return self.tuple != other.tuple
+        try:
+            other = self._validate_operand(other)
+        except (TypeError, ValueError):
+            return False
+        else:
+            return self.tuple == other.tuple
 
     def __lt__(self, other):
         other = self._validate_operand(other)
         return self.tuple < other.tuple
 
-    def __le__(self, other):
-        other = self._validate_operand(other)
-        return self.tuple <= other.tuple
-
-    def __gt__(self, other):
-        other = self._validate_operand(other)
-        return self.tuple > other.tuple
-
-    def __ge__(self, other):
-        other = self._validate_operand(other)
-        return self.tuple >= other.tuple
-
-    def match(self, other_version):
-        """Returns True if other_version matches.
-
-        Args:
-            other_version: string, of the form "x[.y[.x]]" where {x,y,z} can be a
-                number or a wildcard.
-        """
-        major, minor, patch = _str_to_version(other_version, allow_wildcard=True)
-        return major in [self.major, "*"] and minor in [self.minor, "*"] and patch in [self.patch, "*"]
+    def __hash__(self):
+        return hash(_version_tuple_to_str(self.tuple))
 
     @classmethod
     def from_dict(cls, dic):
-        field_names = set(f.name for f in dataclasses.fields(cls))
+        field_names = {f.name for f in dataclasses.fields(cls)}
         return cls(**{k: v for k, v in dic.items() if k in field_names})
 
+    def _to_yaml_string(self) -> str:
+        return self.version_str
 
-def _str_to_version(version_str, allow_wildcard=False):
+
+def _str_to_version_tuple(version_str):
     """Return the tuple (major, minor, patch) version extracted from the str."""
-    reg = _VERSION_WILDCARD_REG if allow_wildcard else _VERSION_RESOLVED_REG
-    res = reg.match(version_str)
+    res = _VERSION_REG.match(version_str)
     if not res:
-        msg = "Invalid version '{}'. Format should be x.y.z".format(version_str)
-        if allow_wildcard:
-            msg += " with {x,y,z} being digits or wildcard."
-        else:
-            msg += " with {x,y,z} being digits."
-        raise ValueError(msg)
-    return tuple(v if v == "*" else int(v) for v in [res.group("major"), res.group("minor"), res.group("patch")])
+        raise ValueError(f"Invalid version '{version_str}'. Format should be x.y.z with {{x,y,z}} being digits.")
+    return tuple(int(v) for v in [res.group("major"), res.group("minor"), res.group("patch")])
+
+
+def _version_tuple_to_str(version_tuple):
+    """Return the str version from the version tuple (major, minor, patch)."""
+    return ".".join(str(v) for v in version_tuple)
